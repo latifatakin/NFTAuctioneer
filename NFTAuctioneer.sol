@@ -22,6 +22,7 @@ contract NFTAuctioneer {
     event End(address winner, uint amount);
     event WithdrawNft(address winner, uint amount);
 
+
     IERC721 public nft;
     uint public nftId;
 
@@ -53,19 +54,17 @@ contract NFTAuctioneer {
         nft.transferFrom(msg.sender, address(this), nftId);
         started = true;
         endAt = block.timestamp + 7 days;
-
         emit Start();
     }
 
     function bid() external payable {
         require(started, "not started");
+        require(msg.sender != seller, "You can't bid in your own auction");
         require(block.timestamp < endAt, "ended");
         require(msg.value > highestBid, "value < highest");
-
         if (highestBidder != address(0)) {
             bids[highestBidder] += highestBid;
         }
-
         highestBidder = msg.sender;
         highestBid = msg.value;
         emit Bid(msg.sender, msg.value);
@@ -73,40 +72,53 @@ contract NFTAuctioneer {
 
     function withdraw() external {
         uint bal = bids[msg.sender];
+        require(bal > 0, "No money to withdraw");
         bids[msg.sender] = 0;
-        payable(msg.sender).transfer(bal);
+        (bool success,) = payable(msg.sender).call{value: bal}("");
+        require(success, "Withdrawal failed");
         emit Withdraw(msg.sender, bal);
+    }
+
+    function transferHelper(uint _highestBid) internal {
+        highestBid = 0;
+        (bool success,) = seller.call{value: _highestBid}("");
+        require(success, "Payment to seller failed");
+        nft.safeTransferFrom(address(this), highestBidder, nftId);
+        
     }
 
     function withdrawNft() external {
         require(started, "not started");
         require(block.timestamp >= endAt, "not ended");
-        require(msg.sender == highestBidder, "not highest bidder");
+        require(msg.sender == highestBidder, "Only the winner can withdraw the NFT");
         require(!nftWithdrawn, "withdrawn");
+        uint bal = highestBid;
         nftWithdrawn = true;
-        nft.safeTransferFrom(address(this), highestBidder, nftId);
-        emit WithdrawNft(highestBidder, highestBid);
+        transferHelper(bal);
+        emit WithdrawNft(highestBidder, bal);
     }
 
     function end() external {
         require(started, "not started");
-        require(block.timestamp >= endAt, "not ended");
+        require(block.timestamp >= endAt, "There is still time to bid");
         require(!ended, "ended");
-
+        require(msg.sender == seller || msg.sender == highestBidder, "Only the seller or winner can end the auction");
         ended = true;
         if (highestBidder != address(0)) {
-            nft.safeTransferFrom(address(this), highestBidder, nftId);
-            seller.transfer(highestBid);
+            uint bal = highestBid;
+            transferHelper(bal);
+            emit End(highestBidder, bal);
         } else {
             nft.safeTransferFrom(address(this), seller, nftId);
         }
-        emit End(highestBidder, highestBid);
+        
     }
 
     function endBeforeEndtime() external {
         require(started, "not started");
-        require(block.timestamp <= endAt, "already reached endAt time");
+        require(block.timestamp < endAt, "already reached endAt time");
         require(!ended, "ended");
+        require(msg.sender == seller, "only the owner can cancel an auction");
         ended = true;
         if (highestBidder != address(0)) {
             bids[highestBidder] += highestBid;
